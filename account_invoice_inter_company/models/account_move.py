@@ -106,11 +106,7 @@ class AccountMove(models.Model):
         dest_user = self.env["res.users"].search(domain, limit=1)
         for line in self.invoice_line_ids:
             try:
-                line.product_id.product_tmpl_id.sudo(False).with_user(
-                    dest_user
-                ).with_context(
-                    **{"allowed_company_ids": [dest_company.id]}
-                ).check_access("read")
+                line._check_intercompany_product(dest_user, dest_company)
             except AccessError as e:
                 raise UserError(
                     _(
@@ -128,7 +124,10 @@ class AccountMove(models.Model):
         dest_journal_type = self._get_destination_journal_type()
         # find the correct journal
         dest_journal = self.env["account.journal"].search(
-            [("type", "=", dest_journal_type), ("company_id", "=", dest_company.id)],
+            [
+                *self.env["account.journal"]._check_company_domain(dest_company),
+                ("type", "=", dest_journal_type),
+            ],
             limit=1,
         )
         if not dest_journal:
@@ -143,6 +142,7 @@ class AccountMove(models.Model):
                     "dest_company_id": dest_company.id,
                 }
             )
+        return dest_journal
 
     def _inter_company_create_invoice(self, dest_company):
         """create an invoice for the given company : it will copy
@@ -243,10 +243,12 @@ class AccountMove(models.Model):
         self.ensure_one()
         self = self.with_context(**clean_context(self.env.context))
         # check if the journal is define in dest company
-        self._check_dest_journal(dest_company)
+        dest_journal = self._check_dest_journal(dest_company)
         vals = {
             "move_type": self._get_destination_invoice_type(),
             "partner_id": self.company_id.partner_id.id,
+            "company_id": dest_company.id,
+            "journal_id": dest_journal.id,
             "ref": self.name,
             "payment_reference": self.payment_reference,
             "invoice_date": self.invoice_date,
@@ -342,6 +344,11 @@ class AccountMoveLine(models.Model):
         copy=False,
         prefetch=False,
     )
+
+    def _check_intercompany_product(self, dest_user, dest_company):
+        self.product_id.product_tmpl_id.sudo(False).with_user(dest_user).with_context(
+            **{"allowed_company_ids": [dest_company.id]}
+        ).check_access("read")
 
     @api.model
     def _prepare_account_move_line(self, dest_move, dest_company):
